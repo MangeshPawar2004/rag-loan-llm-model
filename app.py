@@ -5,8 +5,6 @@ nest_asyncio.apply()
 if not asyncio.get_event_loop().is_running():
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -52,17 +50,25 @@ st.markdown("""
         border-radius: 10px;
     }
     .user-message {
-        background-color: #000ed2;
+        background-color: #007bff; /* Changed to a lighter blue */
+        color: white;
         margin-left: 2rem;
     }
     .assistant-message {
-        background-color: #00000;
+        background-color: #f0f2f6; /* Light gray for assistant */
+        color: #333;
         margin-right: 2rem;
     }
     .stButton > button {
         width: 100%;
         height: 2.5rem;
         font-weight: bold;
+        background-color: #28a745; /* Green for action buttons */
+        color: white;
+        border-radius: 5px;
+    }
+    .stButton > button:hover {
+        background-color: #218838;
     }
     .metric-card {
         background: #235789;
@@ -70,6 +76,18 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #fff;
         text-align: center;
+        color: white;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .metric-card h4 {
+        color: white;
+    }
+    .chart-container {
+        margin-top: 2rem;
+        padding: 1.5rem;
+        background-color: #e0f2f7; /* Light blue background for charts */
+        border-radius: 10px;
+        border: 1px solid #a7d9eb;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -86,6 +104,8 @@ def initialize_session_state():
         st.session_state.chat_history = []
     if 'form_submitted' not in st.session_state:
         st.session_state.form_submitted = False
+    if 'show_chat' not in st.session_state:
+        st.session_state.show_chat = False
 
 def create_user_profile_query(user_data: Dict) -> str:
     """Create a natural language query for finding suitable loan options."""
@@ -116,13 +136,14 @@ def create_user_profile_query(user_data: Dict) -> str:
     
     Please provide:
     1. All available loan types I'm eligible for
-    2. Interest rate ranges for each loan type
-    3. Maximum loan amount I can get
+    2. Interest rate ranges for each loan type from different banks (if available)
+    3. Maximum loan amount I can get from different banks (if available)
     4. Tenure options
     5. Eligibility criteria for each
     6. Required documents
     
-    List all loan products that match my profile, even if partially suitable.
+    Present this information clearly in structured bullet points, ready for display.
+    Specifically, provide comparative interest rates and max loan amounts by bank/product if possible, so it can be parsed for a graph.
     """
     
     return query.strip()
@@ -173,20 +194,50 @@ def render_user_form():
             # Store user profile in session state
             st.session_state.user_profile = user_data
             st.session_state.form_submitted = True
+            st.session_state.show_chat = False # Reset chat view
             st.rerun()
 
-def display_loan_options(response_text: str, source_docs: List):
+def display_loan_options(response_text: str, source_docs: List, graph_data: List[Dict[str, Any]]):
     """Display loan options in an attractive format."""
     st.markdown("### 🎯 Available Loan Options for You")
     
-    # Display main AI response
+    # Display main AI response with enhanced formatting
     st.markdown("#### 💡 AI Recommendation")
     st.markdown(f"""
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                color: white; padding: 1.5rem; border-radius: 10px; margin: 1rem 0;">
+    <div style="background: linear-gradient(135deg, #e6f3ff 0%, #cceeff 100%); 
+                color: #333; padding: 1.5rem; border-radius: 10px; margin: 1rem 0;
+                border: 1px solid #a7d9eb;">
         {response_text}
     </div>
     """, unsafe_allow_html=True)
+
+    # Display graphs if data is available
+    if graph_data:
+        st.markdown("#### 📊 Loan Comparison")
+        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+        df_graph = pd.DataFrame(graph_data)
+        
+        # Filter for Interest Rates
+        interest_rate_data = df_graph[df_graph['Metric'].str.contains('Interest Rate')]
+        if not interest_rate_data.empty:
+            st.subheader("Interest Rate Comparison")
+            # For interest rates, let's show both min and max if available
+            interest_pivot = interest_rate_data.pivot_table(index='Bank/Product', columns='Metric', values='Value')
+            if 'Interest Rate (Min %)' in interest_pivot.columns and 'Interest Rate (Max %)' in interest_pivot.columns:
+                 st.bar_chart(interest_pivot[['Interest Rate (Min %)', 'Interest Rate (Max %)']])
+            elif 'Interest Rate (Min %)' in interest_pivot.columns:
+                st.bar_chart(interest_pivot['Interest Rate (Min %)'])
+            elif 'Interest Rate (Max %)' in interest_pivot.columns:
+                 st.bar_chart(interest_pivot['Interest Rate (Max %)'])
+
+
+        # Filter for Max Loan Amounts
+        loan_amount_data = df_graph[df_graph['Metric'] == 'Max Loan Amount (₹)']
+        if not loan_amount_data.empty:
+            st.subheader("Maximum Loan Amount Comparison")
+            st.bar_chart(loan_amount_data.set_index('Bank/Product')['Value'])
+            
+        st.markdown('</div>', unsafe_allow_html=True)
     
     # Display sources used
     if source_docs:
@@ -212,11 +263,17 @@ def display_loan_options(response_text: str, source_docs: List):
         if st.button("🔄 Modify Profile", use_container_width=True):
             st.session_state.form_submitted = False
             st.session_state.user_profile = None
+            st.session_state.loan_options = None
+            st.session_state.chat_history = []
+            st.session_state.show_chat = False
             st.rerun()
     
     with col3:
         if st.button("📄 Get Application Guide", use_container_width=True):
             add_chat_message("Please guide me through the loan application process step by step.", is_user=True)
+            st.session_state.show_chat = True # Ensure chat is visible when asking this
+            st.rerun()
+
 
 def render_chatbot():
     """Render the chatbot interface."""
@@ -224,7 +281,7 @@ def render_chatbot():
     st.markdown("Ask me anything about loans, eligibility, documents, or application process!")
     
     # Display chat history
-    chat_container = st.container()
+    chat_container = st.container(height=300, border=True) # Fixed height for chat history
     
     with chat_container:
         for message in st.session_state.chat_history:
@@ -233,7 +290,7 @@ def render_chatbot():
                 <div class="chat-message user-message">
                     <strong>👤 You:</strong><br>
                     {message['content']}
-                    <small style="color: #666; float: right;">{message['timestamp']}</small>
+                    <small style="opacity: 0.8; float: right; margin-top: 5px;">{message['timestamp']}</small>
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -241,7 +298,7 @@ def render_chatbot():
                 <div class="chat-message assistant-message">
                     <strong>🤖 Assistant:</strong><br>
                     {message['content']}
-                    <small style="color: #666; float: right;">{message['timestamp']}</small>
+                    <small style="opacity: 0.6; float: right; margin-top: 5px;">{message['timestamp']}</small>
                 </div>
                 """, unsafe_allow_html=True)
     
@@ -292,9 +349,10 @@ def process_chat_message(user_question: str):
     add_chat_message(user_question, is_user=True)
     
     # Create context-aware query
+    profile_context = ""
     if st.session_state.user_profile:
         profile_context = f"""
-        Context about user:
+        Context about user for the current question:
         - Age: {st.session_state.user_profile['age']}
         - Employment: {st.session_state.user_profile['employment_type']}
         - Income: ₹{st.session_state.user_profile['monthly_income']:,}
@@ -303,7 +361,8 @@ def process_chat_message(user_question: str):
         
         User Question: {user_question}
         
-        Please provide a specific answer based on the user's profile.
+        Please provide a specific answer based on the user's profile and the context provided, 
+        in a clear, bullet-point format if possible.
         """
     else:
         profile_context = user_question
@@ -330,36 +389,36 @@ def display_user_summary():
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.markdown("""
+            st.markdown(f"""
             <div class="metric-card">
                 <h4>💼 Employment</h4>
-                <p>{}</p>
+                <p>{profile['employment_type']}</p>
             </div>
-            """.format(profile['employment_type']), unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
         
         with col2:
-            st.markdown("""
+            st.markdown(f"""
             <div class="metric-card">
                 <h4>💰 Income</h4>
-                <p>₹{:,}</p>
+                <p>₹{profile['monthly_income']:,}</p>
             </div>
-            """.format(profile['monthly_income']), unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
         
         with col3:
-            st.markdown("""
+            st.markdown(f"""
             <div class="metric-card">
                 <h4>🎯 Purpose</h4>
-                <p>{}</p>
+                <p>{profile['loan_purpose']}</p>
             </div>
-            """.format(profile['loan_purpose']), unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
         
         with col4:
-            st.markdown("""
+            st.markdown(f"""
             <div class="metric-card">
                 <h4>💳 Amount</h4>
-                <p>₹{:,}</p>
+                <p>₹{profile['loan_amount']:,}</p>
             </div>
-            """.format(profile['loan_amount']), unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
 def main():
     """Main application function."""
@@ -403,7 +462,8 @@ def main():
                     if response["success"]:
                         st.session_state.loan_options = {
                             'result': response["result"],
-                            'source_documents': response["source_documents"]
+                            'source_documents': response["source_documents"],
+                            'graph_data': response.get("graph_data", []) # Get graph data
                         }
                     else:
                         st.error(f"Error getting loan options: {response['result']}")
@@ -417,7 +477,8 @@ def main():
         if st.session_state.loan_options:
             display_loan_options(
                 st.session_state.loan_options['result'],
-                st.session_state.loan_options['source_documents']
+                st.session_state.loan_options['source_documents'],
+                st.session_state.loan_options.get('graph_data', [])
             )
         
         # Step 3: Chatbot interface
@@ -429,10 +490,10 @@ def main():
     with st.sidebar:
         st.markdown("### ℹ️ How It Works")
         st.info("""
-        1. **Enter Your Details**: Fill in your profile information
-        2. **Get Loan Options**: AI analyzes your profile against our loan database
-        3. **Ask Questions**: Chat with our AI assistant for more details
-        4. **Apply**: Get guidance on next steps
+        1. **Enter Your Details**: Fill in your profile information.
+        2. **Get Loan Options**: AI analyzes your profile against our loan database.
+        3. **Ask Questions**: Chat with our AI assistant for more details.
+        4. **Apply**: Get guidance on next steps.
         """)
         
         st.markdown("### 🎯 What You'll Get")
@@ -442,7 +503,8 @@ def main():
         ✅ Eligibility criteria  
         ✅ Required documents  
         ✅ 24/7 AI assistance  
-        ✅ Application guidance
+        ✅ Application guidance  
+        ✅ Visual comparisons of loan metrics
         """)
         
         if st.session_state.user_profile:
@@ -452,6 +514,7 @@ def main():
                 st.session_state.loan_options = None
                 st.session_state.form_submitted = False
                 st.session_state.chat_history = []
+                st.session_state.show_chat = False
                 st.rerun()
             
             if st.button("💾 Save Profile", use_container_width=True):
@@ -477,3 +540,5 @@ Existing Loans: {profile_data['existing_loans']}
 
 if __name__ == "__main__":
     main()
+
+    

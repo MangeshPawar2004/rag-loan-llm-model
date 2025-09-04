@@ -1,11 +1,13 @@
 import os
 import logging
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -57,29 +59,53 @@ class LoanRAGSystem:
             raise
     
     def _get_custom_prompt(self) -> PromptTemplate:
-        """Create the custom prompt template for loan recommendations."""
+        """Create the custom prompt template for loan recommendations with structured output."""
         template = """
         You are a financial loan recommendation expert with extensive knowledge of various loan products.
         
         INSTRUCTIONS:
-        - Use ONLY the information provided in the context below
-        - Recommend the most suitable loan type based on the user's specific needs
-        - If multiple loans are suitable, rank them by relevance
-        - Be specific about eligibility requirements and documentation
-        - If information is insufficient, clearly state what additional details are needed
-        
+        - Use ONLY the information provided in the context below.
+        - Recommend the most suitable loan type(s) based on the user's specific needs.
+        - Present the information in clear, concise, and structured bullet points or sub-sections.
+        - If multiple loans are suitable, present them clearly, indicating their differences and benefits.
+        - Be specific about eligibility requirements and documentation.
+        - If information is insufficient, clearly state what additional details are needed.
+        - If you can extract comparative numerical data (e.g., interest rates, loan amounts for different banks/products), please present it clearly, perhaps in a simple list or table-like format within the text, so it can potentially be parsed for a graph. Indicate the bank/product name for each data point.
+
         Context (Available Loan Products): 
         {context}
         
         User Query: {question}
         
         RESPONSE FORMAT:
-        1. **Recommended Loan**: [Primary recommendation with brief reasoning]
-        2. **Key Features**: [Interest rate, tenure, amount range]
-        3. **Eligibility**: [Age, income, credit score requirements]
-        4. **Required Documents**: [List essential documents]
-        5. **Additional Notes**: [Any important considerations or alternatives]
+        Please structure your response using the following markdown format:
         
+        **🎯 Recommended Loan Options:**
+        *   **Loan Type 1 Name:** [Brief overview of this loan type]
+            *   **Key Features:**
+                *   Interest Rate Range: [e.g., 8.0% - 10.5% (Bank A), 8.2% - 10.7% (Bank B)]
+                *   Maximum Loan Amount: [e.g., Up to ₹50 lakhs (Bank A), Up to ₹75 lakhs (Bank B)]
+                *   Tenure Options: [e.g., Up to 30 years]
+            *   **Eligibility Criteria:**
+                *   Age: [e.g., 21-65 years]
+                *   Monthly Income: [e.g., ₹25,000 minimum]
+                *   Credit Score: [e.g., 700+ preferred]
+            *   **Required Documents:**
+                *   [List essential documents]
+            *   **Why it's suitable:** [Brief explanation]
+
+        *   **Loan Type 2 Name (if applicable):** [Brief overview]
+            *   **Key Features:** ...
+            *   **Eligibility Criteria:** ...
+            *   **Required Documents:** ...
+            *   **Why it's suitable:** ...
+
+        **📝 General Eligibility & Documentation (if not specific to a loan type):**
+        *   [General requirements]
+
+        **💡 Additional Considerations:**
+        *   [Tips, next steps, or missing information if any]
+
         If the context doesn't contain sufficient information to answer the query, respond with:
         "I don't have enough information in my knowledge base to provide a specific recommendation for this query. Please provide more details about [specific missing information]."
         """
@@ -108,27 +134,118 @@ class LoanRAGSystem:
         except Exception as e:
             logger.error(f"Failed to setup QA chain: {e}")
             raise
-    
+
+    def _extract_graph_data(self, response_text: str) -> List[Dict[str, Any]]:
+        """
+        Extracts numerical data for graphing from the LLM's response.
+        This is a heuristic approach and might need refinement based on actual LLM output.
+        It looks for patterns like 'Bank X: Y - Z%' or 'Bank P: Up to ₹Amount'.
+        """
+        graph_data = []
+        
+        # Regex to find interest rates for different banks/products
+        # Example: "8.0% - 10.5% (Bank A)" or "Bank B: 8.2% - 10.7%"
+        # Looking for "Bank Name: Interest Rate Range" or "Interest Rate Range (Bank Name)"
+        interest_rate_pattern = re.compile(
+            r"(?:(\w[\w\s&.]*?):\s*)?([\d.]+\%)(?:\s*-\s*([\d.]+\%))?(?:\s*\(([\w\s&.]*?)\))?", 
+            re.IGNORECASE
+        )
+        
+        # Regex to find loan amounts for different banks/products
+        # Example: "Up to ₹50 lakhs (Bank A)" or "Bank C: Max ₹75 lakhs"
+        loan_amount_pattern = re.compile(
+            r"(?:(\w[\w\s&.]*?):\s*(?:Up to|Max)\s*)?₹([\d,]+)\s*(?:lakhs|crores)?(?:\s*\(([\w\s&.]*?)\))?", 
+            re.IGNORECASE
+        )
+
+        lines = response_text.split('\n')
+        current_loan_type = "Overall" # Default for general recommendations
+
+        for line in lines:
+            if "**Loan Type" in line:
+                match = re.search(r"\*\*Loan Type \d+ Name:\*\* (.+)", line)
+                if match:
+                    current_loan_type = match.group(1).strip()
+                continue
+            
+            # Extract interest rates
+            for match in interest_rate_pattern.finditer(line):
+                bank_name = match.group(1) or match.group(4)
+                if not bank_name: # Try to infer from current loan type if no specific bank
+                    bank_name = current_loan_type.replace("Loan Type", "Product") 
+                
+                if bank_name:
+                    try:
+                        rate_min = float(match.group(2).replace('%', '').strip())
+                        rate_max = float(match.group(3).replace('%', '').strip()) if match.group(3) else rate_min
+                        graph_data.append({
+                            'Bank/Product': bank_name,
+                            'Metric': 'Interest Rate (Min %)',
+                            'Value': rate_min
+                        })
+                        if rate_max != rate_min:
+                             graph_data.append({
+                                'Bank/Product': bank_name,
+                                'Metric': 'Interest Rate (Max %)',
+                                'Value': rate_max
+                            })
+                    except (ValueError, TypeError):
+                        pass # Ignore if conversion fails
+
+            # Extract loan amounts
+            for match in loan_amount_pattern.finditer(line):
+                bank_name = match.group(1) or match.group(3)
+                if not bank_name:
+                    bank_name = current_loan_type.replace("Loan Type", "Product")
+                
+                if bank_name:
+                    try:
+                        amount_str = match.group(2).replace(',', '')
+                        amount = float(amount_str)
+                        if "lakhs" in line.lower():
+                            amount *= 100000
+                        elif "crores" in line.lower():
+                            amount *= 10000000
+                        graph_data.append({
+                            'Bank/Product': bank_name,
+                            'Metric': 'Max Loan Amount (₹)',
+                            'Value': amount
+                        })
+                    except (ValueError, TypeError):
+                        pass # Ignore if conversion fails
+        
+        # Filter out generic entries if more specific ones exist
+        if any(d['Bank/Product'] != "Overall" for d in graph_data):
+            graph_data = [d for d in graph_data if d['Bank/Product'] != "Overall"]
+            
+        return graph_data
+
+
     def query(self, user_query: str) -> Dict[str, Any]:
-        """Process a user query and return recommendations with sources."""
+        """Process a user query and return recommendations with sources and graph data."""
         if not user_query or not user_query.strip():
             return {
                 "result": "Please provide a valid loan-related question.",
                 "source_documents": [],
-                "success": False
+                "success": False,
+                "graph_data": []
             }
         
         try:
             logger.info(f"Processing query: {user_query[:50]}...")
             response = self.qa_chain.invoke({"query": user_query})
             
+            # Extract graph data from the LLM's structured response
+            graph_data = self._extract_graph_data(response["result"])
+
             # Enhance response with metadata
             enhanced_response = {
                 "result": response["result"],
                 "source_documents": response["source_documents"],
                 "success": True,
                 "query": user_query,
-                "num_sources": len(response["source_documents"])
+                "num_sources": len(response["source_documents"]),
+                "graph_data": graph_data
             }
             
             return enhanced_response
@@ -138,7 +255,8 @@ class LoanRAGSystem:
             return {
                 "result": f"Sorry, I encountered an error while processing your query: {str(e)}",
                 "source_documents": [],
-                "success": False
+                "success": False,
+                "graph_data": []
             }
     
     def get_similar_documents(self, query: str, k: int = 3) -> list:
@@ -170,6 +288,11 @@ class LoanRAGSystem:
                 if response["success"]:
                     print(f"\n✅ **Answer:**\n{response['result']}")
                     
+                    if response["graph_data"]:
+                        print("\n📊 **Extracted Data for Graphing:**")
+                        for item in response["graph_data"]:
+                            print(f"  - {item['Bank/Product']}: {item['Metric']} = {item['Value']}")
+
                     if response["source_documents"]:
                         print(f"\n📚 **Sources Used ({response['num_sources']} documents):**")
                         for i, doc in enumerate(response["source_documents"], 1):
