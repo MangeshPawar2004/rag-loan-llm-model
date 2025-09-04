@@ -120,31 +120,44 @@ def create_user_profile_query(user_data: Dict) -> str:
     work_experience = user_data.get('work_experience', 0)
     
     query = f"""
-    Find suitable loan options for my profile:
-    
-    Personal Details:
-    - Age: {age} years
-    - Employment: {employment}
-    - Monthly Income: ₹{income:,}
-    - Work Experience: {work_experience} years
-    - Credit Score: {credit_score}
-    - Existing Loans: {existing_loans}
-    
-    Loan Requirements:
-    - Purpose: {loan_purpose}
-    - Required Amount: ₹{loan_amount:,}
-    
-    Please provide:
-    1. All available loan types I'm eligible for
-    2. Interest rate ranges for each loan type from different banks (if available)
-    3. Maximum loan amount I can get from different banks (if available)
-    4. Tenure options
-    5. Eligibility criteria for each
-    6. Required documents
-    
-    Present this information clearly in structured bullet points, ready for display.
-    Specifically, provide comparative interest rates and max loan amounts by bank/product if possible, so it can be parsed for a graph.
-    """
+    Act as an expert financial loan advisor. Your task is to analyze the user's profile and generate a professional, easy-to-read summary of the most suitable loan options.
+
+**User Profile:**
+- **Age:** {age} years
+- **Employment:** {employment}
+- **Monthly Income:** ₹{income:,}
+- **Work Experience:** {work_experience} years
+- **Credit Score:** {credit_score}
+- **Existing Loans:** {existing_loans}
+
+**Loan Requirements:**
+- **Purpose:** {loan_purpose}
+- **Required Amount:** ₹{loan_amount:,}
+
+**Output Instructions:**
+1.  For each recommended loan, strictly follow the format in the template below.
+2.  Use only bold markdown for labels (e.g., **Interest Rate:**). Do not use any other markdown like italics or backticks.
+3.  Use simple hyphens (-) for bullet points.
+4.  Do not include any conversational phrases, greetings, or concluding summaries. The output should begin directly with the first loan option.
+5.  Ensure the values for 'Interest Rate' and 'Max Loan Amount' are clearly stated for easy data extraction.
+
+**Template for Each Loan Option:**
+
+### [Bank Name] - [Loan Type]
+
+- **Interest Rate:** [Provide the rate or range, e.g., 8.75% - 9.50% p.a.]
+- **Max Loan Amount:** [Provide the maximum possible amount, e.g., Up to ₹75,00,000]
+- **Tenure:** [Provide the loan term, e.g., 5 to 30 years]
+- **Key Eligibility Criteria:**
+  - [Criterion 1, e.g., Minimum Age: 21 years]
+  - [Criterion 2, e.g., CIBIL Score: 750+ recommended]
+  - [Criterion 3, e.g., For Salaried: Min. 2 years total work experience]
+- **Required Documents:**
+  - [Document 1, e.g., Proof of Identity (PAN Card, Aadhaar)]
+  - [Document 2, e.g., Proof of Address (Utility Bill, Passport)]
+  - [Document 3, e.g., Income Proof (Last 3 months' salary slips)]
+  - [Document 4, e.g., Bank Statement (Last 6 months)]
+---"""
     
     return query.strip()
 
